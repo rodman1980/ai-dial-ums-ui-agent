@@ -42,7 +42,10 @@ async def lifespan(app: FastAPI):
 
     # Initialize UMS MCP client
     logger.info("Initializing UMS MCP client")
-    ums_mcp_client = await HttpMCPClient.create(os.getenv("UMS_MCP_URL", "http://localhost:8005/mcp"))
+    ums_mcp_url = os.getenv("UMS_MCP_URL", "http://localhost:8005/mcp")
+    logger.info("UMS MCP URL: %s", ums_mcp_url)
+    ums_mcp_client = await HttpMCPClient.create(ums_mcp_url)
+
     for tool in await ums_mcp_client.get_tools():
         tool_name = tool.get('function', {}).get('name')
         tools.append(tool)
@@ -66,11 +69,12 @@ async def lifespan(app: FastAPI):
 
     # model = "gpt-4o"
     model = os.getenv("ORCHESTRATION_MODEL", "gpt-4o")
-    logger.info("Initializing DIAL client", extra={"model": model})
+    endpoint=os.getenv("DIAL_URL", "https://ai-proxy.lab.epam.com")
+    logger.info("Initializing DIAL client", extra={"url": endpoint, "model": model, "api_key": dial_api_key})
 
     dial_client = DialClient(
         api_key=dial_api_key,
-        endpoint=os.getenv("DIAL_URL", "https://ai-proxy.lab.epam.com"),
+        endpoint=endpoint,
         model=model,
         tools=tools,
         tool_name_client_map=tool_name_client_map
@@ -252,6 +256,6 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8011,
+        port=8000,
         log_level="debug",
     )
