@@ -23,26 +23,47 @@ class DialClient:
             tools: list[dict[str, Any]],
             tool_name_client_map: dict[str, HttpMCPClient | StdioMCPClient]
     ):
-        #TODO:
-        # 1. set tools, tool_name_client_map and model
-        # 2. Create AsyncAzureOpenAI as `async_openai` with:
-        #   - api_key=api_key
-        #   - azure_endpoint=endpoint
-        #   - api_version=""
-        raise NotImplementedError()
+        self.tools = tools
+        self.tool_name_client_map = tool_name_client_map
+        self.model = model
+        self.async_openai = AsyncAzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=endpoint,
+            api_version=""
+        )
 
     async def response(self, messages: list[Message]) -> Message:
         """Non-streaming completion with tool calling support"""
-        #TODO:
-        # 1. Create chat completions request (self.async_openai.chat.completions.create) and get it as `response`
-        # 2. Create message `ai_message`
-        # 3. Check if message contains tool_calls, if yes, then add them as tool_calls
-        # 4. If `ai_message` contains tool calls then:
-        #       - add `ai_message` to messages
-        #       - call `_call_tools(ai_message, messages)`
-        #       - make recursive call with messages to process further
-        # 5. return ai_message
-        raise NotImplementedError()
+        response = await self.async_openai.chat.completions.create(
+            model=self.model,
+            messages=[msg.to_dict() for msg in messages],
+            tools=self.tools if self.tools else None
+        )
+        
+        ai_message = Message(
+            role=Role.ASSISTANT,
+            content=response.choices[0].message.content
+        )
+        
+        if response.choices[0].message.tool_calls:
+            ai_message.tool_calls = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments
+                    }
+                }
+                for tc in response.choices[0].message.tool_calls
+            ]
+        
+        if ai_message.tool_calls:
+            messages.append(ai_message)
+            await self._call_tools(ai_message, messages)
+            return await self.response(messages)
+        
+        return ai_message
 
     async def stream_response(self, messages: list[Message]) -> AsyncGenerator[str, None]:
         """
@@ -77,26 +98,58 @@ class DialClient:
 
     def _collect_tool_calls(self, tool_deltas):
         """Convert streaming tool call deltas to complete tool calls"""
-        #TODO:
-        # 1. Create `tool_dict` with `defaultdict(lambda: {"id": None, "function": {"arguments": "", "name": None}, "type": None})`
-        # 2. Iterate through tool_deltas and:
-        #       - get delta index
-        #       - if delta has id then add it to `tool_dict[idx]["id"]`
-        #       - if delta has name (function.name) the add to `tool_dict[idx]["function"]["name"]`
-        #       - if delta has arguments (function.arguments) the add to `tool_dict[idx]["function"]["arguments"]`
-        #       - if delta has type then add it to `tool_dict[idx]["type"]`
-        # 3. Create list from `tool_dict` values and return it
-        raise NotImplementedError()
+        tool_dict = defaultdict(lambda: {
+            "id": None,
+            "function": {"arguments": "", "name": None},
+            "type": None
+        })
+        
+        for delta in tool_deltas:
+            idx = delta.index
+            if delta.id:
+                tool_dict[idx]["id"] = delta.id
+            if delta.function and delta.function.name:
+                tool_dict[idx]["function"]["name"] = delta.function.name
+            if delta.function and delta.function.arguments:
+                tool_dict[idx]["function"]["arguments"] += delta.function.arguments
+            if delta.type:
+                tool_dict[idx]["type"] = delta.type
+        
+        return list(tool_dict.values())
 
     async def _call_tools(self, ai_message: Message, messages: list[Message], silent: bool = False):
         """Execute tool calls using MCP client"""
-        #TODO:
-        # Iterate through ai_message tool_calls:
-        # 1. Get tool name from tool call (function.name)
-        # 2. Load tool arguments from tool call (function.arguments) through `json.loads`
-        # 3. Get MCP client from `tool_name_client_map` via tool name
-        # 4. If no MCP Client found then create tool message with info in content that such tool is absent, add it to
-        #    `messages`, and `continue`
-        # 5. Make tool call with MCP client (its async!)
-        # 6. Add tool message with content with tool execution result to `messages`
-        raise NotImplementedError()
+        for tool_call in ai_message.tool_calls:
+            tool_name = tool_call["function"]["name"]
+            tool_args = json.loads(tool_call["function"]["arguments"])
+            
+            mcp_client = self.tool_name_client_map.get(tool_name)
+            
+            if not mcp_client:
+                tool_message = Message(
+                    role=Role.TOOL,
+                    content=f"Error: Tool '{tool_name}' not found",
+                    tool_call_id=tool_call["id"],
+                    name=tool_name
+                )
+                messages.append(tool_message)
+                continue
+            
+            try:
+                result = await mcp_client.call_tool(tool_name, tool_args)
+                tool_message = Message(
+                    role=Role.TOOL,
+                    content=str(result),
+                    tool_call_id=tool_call["id"],
+                    name=tool_name
+                )
+                messages.append(tool_message)
+            except Exception as e:
+                logger.error(f"Error calling tool {tool_name}: {e}")
+                tool_message = Message(
+                    role=Role.TOOL,
+                    content=f"Error executing tool: {str(e)}",
+                    tool_call_id=tool_call["id"],
+                    name=tool_name
+                )
+                messages.append(tool_message)
